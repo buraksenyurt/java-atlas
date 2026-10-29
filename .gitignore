@@ -11,3 +11,11 @@ node_modules/
 # Snapshot review leftovers
 *.snap.new
 *.pending-snap
+
+# Editor / OS
+.vs/
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db

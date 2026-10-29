@@ -3,7 +3,7 @@
 > **Atölye:** Fikirler Atölyesi
 > **Doküman sürümü:** v1.7 — 19 Ekim 2026
 > **Dokümanlar:** bu klasör (`java-atlas/docs`)
-> **Kod:** `coding-vibes/java-atlas`
+> **Kod:** `C:\Users\burak\Development\java-atlas` · [github.com/buraksenyurt/java-atlas](https://github.com/buraksenyurt/java-atlas) *(Ekim 2026'da `coding-vibes`'tan geçmişiyle taşındı)*
 > **Durum:** Faz 0–7 tamamlandı — **MVP hazır**; sıradaki: Faz 8 (canlı izleme)
 
 ---
@@ -115,7 +115,7 @@ easy-git'teki "git'in kafa karıştıran gerçekleri" listesinin karşılığı:
 ### 5.1 Klasör yapısı
 
 ```
-coding-vibes/java-atlas/
+java-atlas/
 ├── Cargo.toml                     # Cargo workspace kökü
 ├── package.json                   # Vite + Svelte + Tauri CLI
 ├── README.md
