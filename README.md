@@ -56,3 +56,16 @@ cargo run -p java-atlas-scan --example inspect -- samples/atlas-bank --sources
 # çözümlenmiş graf: döngüler, JPMS ihlalleri, bulgular, metrikler
 cargo run -p java-atlas-scan --example inspect -- samples/atlas-bank --atlas
 ```
+
+## Sürümler
+
+Hazır derlemeler [Releases](https://github.com/buraksenyurt/java-atlas/releases) sayfasında. Her sürümde Windows x64, Linux x64 ve macOS (Apple Silicon) için taşınabilir paket, yükleyiciler ve dosyaların SHA256 özetlerini içeren bir `release.json` bulunur.
+
+Yeni sürüm çıkarmak için `package.json`, `src-tauri/tauri.conf.json` ve `Cargo.toml` içindeki sürümü güncelleyip commit'le, ardından tag'i push'la:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+[`release`](.github/workflows/release.yml) workflow'u tag'deki sürümün projedekiyle aynı olduğunu doğrular, tüm platformlar için derler ve sürümü yayınlar.

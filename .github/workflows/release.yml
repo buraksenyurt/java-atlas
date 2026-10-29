@@ -1,0 +1,179 @@
+# Bir sürüm tag'i (v1.2.3) push'landığında üç platform için derler,
+# dosyaları taslak bir GitHub Release'e yükler, release.json'u üretir ve yayınlar.
+#
+# Sürüm çıkarmak:
+#   1. package.json, src-tauri/tauri.conf.json ve Cargo.toml içindeki sürümü güncelle, commit'le
+#   2. git tag v1.2.3 && git push origin v1.2.3
+#
+# Bir platform başarısız olursa release taslak kalır; ilgili job'ı "Re-run failed jobs"
+# ile tekrar çalıştır ya da Actions > release > Run workflow ile aynı tag'i ver.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Derlenecek mevcut tag (örn. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TOOL: java-atlas
+  APP: java-atlas
+  TAG: ${{ inputs.tag || github.ref_name }}
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  prepare:
+    name: Sürüm kontrolü ve taslak release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Tag ile proje sürümü aynı mı?
+        id: version
+        run: |
+          version=$(scripts/release/check-version.sh "$TAG" \
+            "$(jq -r .version package.json)" \
+            "$(jq -r .version src-tauri/tauri.conf.json)" \
+            "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Taslak release
+        run: |
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "::error::$TAG zaten yayınlanmış. Yayınlanmış bir sürüm değiştirilmez; yeni bir sürüm çıkar."
+            exit 1
+          fi
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TOOL $TAG"
+
+  build:
+    name: Derleme (${{ matrix.platform }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: windows-x64, os: windows-latest, bundles: "nsis,msi" }
+          - { platform: linux-x64, os: ubuntu-22.04, bundles: "appimage,deb" }
+          - { platform: macos-arm64, os: macos-latest, bundles: "app,dmg" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Linux bağımlılıkları
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf file
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.platform }}
+
+      - run: npm ci
+
+      - name: Tauri build
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+
+      - name: Paketle
+        run: |
+          set -euo pipefail
+          base="$TOOL-$VERSION-$PLATFORM"
+          b=target/release/bundle
+          mkdir -p out
+          case "$PLATFORM" in
+            windows-*)
+              (cd target/release && 7z a -tzip "$GITHUB_WORKSPACE/out/$base.zip" "$APP.exe" >/dev/null)
+              cp "$b"/nsis/*-setup.exe "out/$base-setup.exe"
+              cp "$b"/msi/*.msi "out/$base.msi"
+              scripts/release/fragment.sh "$PLATFORM" "fragment-$PLATFORM.json" \
+                "out/$base.zip" zip "$APP.exe" \
+                "out/$base-setup.exe:nsis" "out/$base.msi:msi"
+              ;;
+            linux-*)
+              cp "$b"/appimage/*.AppImage "out/$base.AppImage"
+              cp "$b"/deb/*.deb "out/$base.deb"
+              scripts/release/fragment.sh "$PLATFORM" "fragment-$PLATFORM.json" \
+                "out/$base.AppImage" file "$base.AppImage" \
+                "out/$base.deb:deb"
+              ;;
+            macos-*)
+              tar -czf "out/$base.app.tar.gz" -C "$b/macos" "$APP.app"
+              cp "$b"/dmg/*.dmg "out/$base.dmg"
+              scripts/release/fragment.sh "$PLATFORM" "fragment-$PLATFORM.json" \
+                "out/$base.app.tar.gz" tar.gz "$APP.app/Contents/MacOS/$APP" \
+                "out/$base.dmg:dmg"
+              ;;
+          esac
+
+      - name: Release'e yükle
+        run: gh release upload "$TAG" out/* --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fragment-${{ matrix.platform }}
+          path: fragment-${{ matrix.platform }}.json
+          if-no-files-found: error
+
+  publish:
+    name: release.json ve yayın
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fragment-*
+          merge-multiple: true
+          path: fragments
+
+      - name: release.json
+        run: |
+          scripts/release/compose-manifest.sh "$TOOL" "$VERSION" "$TAG" "$GH_REPO" \
+            "$(git rev-parse HEAD)" fragments > release.json
+          cat release.json
+
+      - name: Yayınla
+        run: |
+          gh release upload "$TAG" release.json --clobber
+          if [[ "$VERSION" == *-* ]]; then
+            gh release edit "$TAG" --draft=false --prerelease
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi
