@@ -76,8 +76,11 @@ jobs:
       run:
         shell: bash
     env:
-      VERSION: ${{ needs.prepare.outputs.version }}
-      PLATFORM: ${{ matrix.platform }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      # Not "PLATFORM" / "VERSION": MSBuild reads environment variables as
+      # properties (case-insensitively), so PLATFORM=windows-x64 would become
+      # Platform=windows-x64 and break the solution build.
+      RELEASE_TARGET: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -109,29 +112,29 @@ jobs:
       - name: Paketle
         run: |
           set -euo pipefail
-          base="$TOOL-$VERSION-$PLATFORM"
+          base="$TOOL-$RELEASE_VERSION-$RELEASE_TARGET"
           b=target/release/bundle
           mkdir -p out
-          case "$PLATFORM" in
+          case "$RELEASE_TARGET" in
             windows-*)
               (cd target/release && 7z a -tzip "$GITHUB_WORKSPACE/out/$base.zip" "$APP.exe" >/dev/null)
               cp "$b"/nsis/*-setup.exe "out/$base-setup.exe"
               cp "$b"/msi/*.msi "out/$base.msi"
-              scripts/release/fragment.sh "$PLATFORM" "fragment-$PLATFORM.json" \
+              scripts/release/fragment.sh "$RELEASE_TARGET" "fragment-$RELEASE_TARGET.json" \
                 "out/$base.zip" zip "$APP.exe" \
                 "out/$base-setup.exe:nsis" "out/$base.msi:msi"
               ;;
             linux-*)
               cp "$b"/appimage/*.AppImage "out/$base.AppImage"
               cp "$b"/deb/*.deb "out/$base.deb"
-              scripts/release/fragment.sh "$PLATFORM" "fragment-$PLATFORM.json" \
+              scripts/release/fragment.sh "$RELEASE_TARGET" "fragment-$RELEASE_TARGET.json" \
                 "out/$base.AppImage" file "$base.AppImage" \
                 "out/$base.deb:deb"
               ;;
             macos-*)
               tar -czf "out/$base.app.tar.gz" -C "$b/macos" "$APP.app"
               cp "$b"/dmg/*.dmg "out/$base.dmg"
-              scripts/release/fragment.sh "$PLATFORM" "fragment-$PLATFORM.json" \
+              scripts/release/fragment.sh "$RELEASE_TARGET" "fragment-$RELEASE_TARGET.json" \
                 "out/$base.app.tar.gz" tar.gz "$APP.app/Contents/MacOS/$APP" \
                 "out/$base.dmg:dmg"
               ;;
@@ -151,7 +154,7 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -165,14 +168,14 @@ jobs:
 
       - name: release.json
         run: |
-          scripts/release/compose-manifest.sh "$TOOL" "$VERSION" "$TAG" "$GH_REPO" \
+          scripts/release/compose-manifest.sh "$TOOL" "$RELEASE_VERSION" "$TAG" "$GH_REPO" \
             "$(git rev-parse HEAD)" fragments > release.json
           cat release.json
 
       - name: Yayınla
         run: |
           gh release upload "$TAG" release.json --clobber
-          if [[ "$VERSION" == *-* ]]; then
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
             gh release edit "$TAG" --draft=false --prerelease
           else
             gh release edit "$TAG" --draft=false --latest
