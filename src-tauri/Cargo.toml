@@ -24,3 +24,5 @@ ts-rs = "12"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# File system events (inotify, ReadDirectoryChangesW, FSEvents) for live updates.
+notify = "8.2"

@@ -11,10 +11,10 @@
 //! The layout depends only on the atlas, never on filters: toggling test code
 //! must not make the country move.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::{Atlas, NodeId, NodeKind};
-use crate::geometry::{Rect, squarify};
+use crate::geometry::{Placement, Rect, biggest_first, squarify_like};
 
 /// The land, in world units. 1000 × 680 is roughly the window's shape.
 pub const LAND: Rect = Rect::new(0.0, 0.0, 1000.0, 680.0);
@@ -55,12 +55,28 @@ pub struct Layout {
     /// Indexed by node: regions, cities, buildings, islands and ports.
     pub rects: Vec<Option<Rect>>,
     pub archipelagos: Vec<Archipelago>,
+    /// Indexed by node: the place of a region, city or building in the
+    /// placement order of its siblings, and the treemap row it landed in.
+    /// Fed back into [`Atlas::layout_like`] (phase 8).
+    pub rank: Vec<Option<(u32, Placement)>>,
 }
 
 impl Layout {
     pub fn rect(&self, id: NodeId) -> Option<Rect> {
         self.rects[id.index()]
     }
+}
+
+/// Placement order and rows of an earlier layout, by stable node key.
+pub type LayoutHint = HashMap<String, (u32, Placement)>;
+
+/// The order to place siblings in: those known to `previous` in their old
+/// order, then the new ones biggest first.
+fn placement_order(values: &[f64], previous: &[Option<(u32, Placement)>]) -> Vec<usize> {
+    let mut order = biggest_first(values);
+    // A stable sort keeps "biggest first" among the new tiles.
+    order.sort_by_key(|&i| previous[i].map_or((1, 0), |(r, _)| (0, r)));
+    order
 }
 
 /// Room for a label at the top of a tile, proportional to its size.
@@ -73,9 +89,30 @@ fn padding(r: &Rect) -> f64 {
 }
 
 impl Atlas {
+    /// The layout of a freshly opened project: biggest tiles first.
     pub fn layout(&self) -> Layout {
+        self.layout_like(&LayoutHint::new())
+    }
+
+    /// The order this layout placed its tiles in, to pass to the next
+    /// [`Atlas::layout_like`] after a change.
+    pub fn hint(&self, layout: &Layout) -> LayoutHint {
+        layout
+            .rank
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.map(|r| (self.key(self.nodes[i].id), r)))
+            .collect()
+    }
+
+    /// Like [`Atlas::layout`], but tiles that existed in an earlier layout
+    /// keep their placement order (`hint`); new tiles follow, biggest first.
+    /// Sizes still follow the code, so borders move a little, but a region
+    /// that grew does not jump to the other end of the country.
+    pub fn layout_like(&self, hint: &LayoutHint) -> Layout {
         let sizes = self.sizes();
         let mut rects: Vec<Option<Rect>> = vec![None; self.nodes.len()];
+        let mut rank: Vec<Option<(u32, Placement)>> = vec![None; self.nodes.len()];
         // parent → children, built once (a scan per tile would be quadratic).
         let mut children: Vec<Vec<NodeId>> = vec![Vec::new(); self.nodes.len()];
         let mut modules = Vec::new();
@@ -102,7 +139,24 @@ impl Atlas {
                 .iter()
                 .map(|id| f64::from(sizes[id.index()]).max(total * MIN_SHARE).max(1.0))
                 .collect();
-            for (id, tile) in ids.iter().zip(squarify(&values, area)) {
+            let before: Vec<Option<(u32, Placement)>> = ids
+                .iter()
+                .map(|&id| {
+                    if hint.is_empty() {
+                        None
+                    } else {
+                        hint.get(&self.key(id)).copied()
+                    }
+                })
+                .collect();
+            let order = placement_order(&values, &before);
+            let previous: Vec<Option<Placement>> =
+                before.iter().map(|b| b.map(|(_, p)| p)).collect();
+            let (tiles, placed) = squarify_like(&values, &order, &previous, area);
+            for (place, &i) in order.iter().enumerate() {
+                rank[ids[i].index()] = placed[i].map(|p| (place as u32, p));
+            }
+            for (id, tile) in ids.iter().zip(tiles) {
                 // A gap between neighbours is the border line on the map.
                 let tile = tile.inset(padding(&tile));
                 rects[id.index()] = Some(tile);
@@ -127,6 +181,7 @@ impl Atlas {
             mainland,
             rects,
             archipelagos,
+            rank,
         }
     }
 

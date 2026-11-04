@@ -378,6 +378,71 @@ mod layout {
         assert!(l.world.contains(&l.archipelagos[0].frame));
     }
 
+    /// Phase 8: a live update re-lays the map out. bank-common suddenly
+    /// becomes the biggest module; without a hint it would move to the
+    /// first place (top left), with one it keeps its old place in the order.
+    #[test]
+    fn a_hint_keeps_the_regions_in_their_order() {
+        let mut facts =
+            read_project(&sample("atlas-bank"), &ScanOptions::default(), &|_| {}).unwrap();
+        let before = Atlas::build(&facts);
+        let old = before.layout();
+        let hint = before.hint(&old);
+
+        let common = facts
+            .modules
+            .iter_mut()
+            .find(|m| m.name == "bank-common")
+            .unwrap();
+        common.files[0].types[0].lines += 400;
+        let after = Atlas::build(&facts);
+
+        let rank = |a: &Atlas, l: &java_atlas_core::atlas::Layout, m: &str| {
+            l.rank[a.find(m).unwrap().index()].unwrap().0
+        };
+        let modules: Vec<String> = facts
+            .modules
+            .iter()
+            .filter(|m| !m.aggregator)
+            .map(|m| m.id.clone())
+            .collect();
+
+        let free = after.layout();
+        assert_eq!(
+            rank(&after, &free, "com.atlasbank:bank-common"),
+            0,
+            "biggest first"
+        );
+
+        let kept = after.layout_like(&hint);
+        for m in &modules {
+            assert_eq!(
+                rank(&after, &kept, m),
+                rank(&before, &old, m),
+                "{m} moved in the order"
+            );
+        }
+        // And the regions that did not change stay closer to where they were.
+        let centre = |a: &Atlas, l: &java_atlas_core::atlas::Layout, m: &str| {
+            let r = l.rect(a.find(m).unwrap()).unwrap();
+            (r.x + r.w / 2.0, r.y + r.h / 2.0)
+        };
+        let drift = |l: &java_atlas_core::atlas::Layout| -> f64 {
+            modules
+                .iter()
+                .filter(|m| !m.ends_with("bank-common"))
+                .map(|m| {
+                    let (x0, y0) = centre(&before, &old, m);
+                    let (x1, y1) = centre(&after, l, m);
+                    (x1 - x0).hypot(y1 - y0)
+                })
+                .sum()
+        };
+        // Same order and same rows: about half the movement (measured: 1870 → 820)
+        // even for this drastic change; small edits barely move anything.
+        assert!(drift(&kept) < drift(&free) / 2.0);
+    }
+
     #[test]
     fn the_layout_is_deterministic() {
         let first = atlas("atlas-bank").layout();

@@ -18,6 +18,16 @@
   }
 
   const busy = $derived(project.status === "scanning");
+
+  // Live updates: on, switched off, or wanted but the watch could not start.
+  const liveState = $derived(!project.live.enabled ? "off" : project.live.watching ? "on" : "problem");
+  const liveTitle = $derived(
+    liveState === "on"
+      ? "Canlı: kaydedilen değişiklikler haritaya hemen yansır. Duraklatmak için tıkla."
+      : liveState === "off"
+        ? "Duraklatıldı: değişiklikler biriktiriliyor. Sürdürmek için tıkla."
+        : `Klasör izlenemiyor: ${project.live.error ?? "bilinmeyen hata"}`,
+  );
 </script>
 
 <header class="toolbar">
@@ -55,6 +65,16 @@
       <label><input type="checkbox" checked={project.filters.jdk} onchange={(e) => project.setFilters({ jdk: e.currentTarget.checked })} /> JDK</label>
       <label><input type="checkbox" checked={project.filters.external} onchange={(e) => project.setFilters({ external: e.currentTarget.checked })} /> Dış</label>
       <button class="ghost" onclick={() => project.rescan()} disabled={busy} title="Yeniden tara" aria-label="Yeniden tara">⟳</button>
+      <button
+        class="ghost live"
+        class:on={liveState === "on"}
+        class:problem={liveState === "problem"}
+        onclick={() => project.toggleLive()}
+        aria-pressed={project.live.enabled}
+        title={liveTitle}
+      >
+        <span class="dot" aria-hidden="true"></span>{project.live.enabled ? "Canlı" : "Durdu"}
+      </button>
     </div>
   {:else}
     <span class="muted">Henüz proje seçilmedi</span>
@@ -80,6 +100,12 @@
   .theme { margin-left: auto; white-space: nowrap; }
   .filters + .theme { margin-left: 0; }
   .ghost.active { background: var(--hover); border-color: var(--accent); }
+  .live { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .live .dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); }
+  .live.on .dot { background: var(--ok); border-color: var(--ok); animation: breathe 2.4s ease-in-out infinite; }
+  .live.problem .dot { background: var(--warn); border-color: var(--warn); }
+  @keyframes breathe { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .live.on .dot { animation: none; } }
 
   .menu { position: relative; }
   .menu summary {

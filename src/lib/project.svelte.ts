@@ -4,6 +4,8 @@
 import * as api from "./api";
 import type { AtlasViewDto } from "./bindings/AtlasViewDto";
 import type { EvidenceDto } from "./bindings/EvidenceDto";
+import type { LiveDto } from "./bindings/LiveDto";
+import type { LiveEvent } from "./bindings/LiveEvent";
 import type { NodeDetailsDto } from "./bindings/NodeDetailsDto";
 import type { TreeDto } from "./bindings/TreeDto";
 import type { ViewEdgeDto } from "./bindings/ViewEdgeDto";
@@ -36,6 +38,14 @@ function crumbOf(node: NodeDto): Crumb {
 export type Selection =
   | { kind: "node"; details: NodeDetailsDto }
   | { kind: "road"; edge: ViewEdgeDto; from: NodeDto; to: NodeDto; evidence: EvidenceDto[] };
+
+/** The last live update, for the toast; `seq` restarts its timer. */
+export type LiveNotice =
+  | { kind: "updated"; full: boolean; trigger: string | null; files: string[]; fileCount: number; ms: number; seq: number }
+  | { kind: "failed"; message: string; seq: number };
+
+/** How long changed places glow on the map after a live update. */
+const PULSE_MS = 2600;
 
 /** A request for the map's camera; `seq` makes repeated requests distinct. */
 export interface Flight {
@@ -70,12 +80,62 @@ class ProjectStore {
   /** Path of the project being scanned or shown. */
   path = $state<string | null>(null);
 
+  /** Phase 8: is the folder watched, and what changed last. */
+  live = $state<LiveDto>({ enabled: true, watching: false, error: null });
+  notice = $state<LiveNotice | null>(null);
+  /** Keys of modules, packages and types that just changed; the map makes them glow. */
+  pulse = $state<Set<string>>(new Set());
+  private noticeSeq = 0;
+  private pulseTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Live events are handled one after another, never interleaved. */
+  private liveQueue: Promise<void> = Promise.resolve();
+  private listening = false;
+
   async init() {
     try {
       this.recent = await api.recentProjects();
     } catch {
       this.recent = []; // a broken store file is not worth an error
     }
+    if (!this.listening) {
+      this.listening = true;
+      await api
+        .onAtlasChanged((event) => {
+          this.liveQueue = this.liveQueue.then(() => this.applyLive(event)).catch(() => {});
+        })
+        .catch(() => (this.listening = false));
+    }
+  }
+
+  /** Switches live updates on or off (the toolbar's "Canlı" button). */
+  async toggleLive() {
+    this.live = await api.setLive(!this.live.enabled).catch(() => this.live);
+  }
+
+  private async applyLive(event: LiveEvent) {
+    // A scan the user started replaces everything anyway.
+    if (this.status !== "ready" || !this.summary) return;
+    const seq = ++this.noticeSeq;
+    if (event.kind === "failed") {
+      this.notice = { kind: "failed", message: event.message, seq };
+      return;
+    }
+    this.summary = event.summary;
+    this.tree = await api.getTree();
+    await this.refreshView();
+    await this.refreshSelection();
+    this.notice = {
+      kind: "updated",
+      full: event.full,
+      trigger: event.trigger,
+      files: event.files,
+      fileCount: event.fileCount,
+      ms: event.ms,
+      seq,
+    };
+    this.pulse = new Set(event.changedKeys);
+    clearTimeout(this.pulseTimer);
+    this.pulseTimer = setTimeout(() => (this.pulse = new Set()), PULSE_MS);
   }
 
   async choose() {
@@ -94,6 +154,8 @@ class ProjectStore {
     this.path = path;
     try {
       this.summary = await api.openProject(path, (event) => (this.progress = event));
+      // Opening (re)starts the folder watch; ask how it went and keep the user's choice.
+      this.live = await api.setLive(this.live.enabled).catch(() => this.live);
       this.tree = await api.getTree();
       await this.refreshView();
       await this.refreshSelection();
@@ -204,11 +266,22 @@ class ProjectStore {
     this.fly(target, margin);
   }
 
-  /** After a rescan, refresh what the details panel shows (or drop it). */
+  /**
+   * After a rescan or a live update, refresh what the details panel shows,
+   * or drop it when the node or road is gone. Keys are stable across scans,
+   * which is what makes this possible.
+   */
   private async refreshSelection() {
     const sel = this.selection;
-    if (sel?.kind !== "node") {
-      this.selection = null;
+    if (!sel) return;
+    if (sel.kind === "road") {
+      const edge = this.view?.edges.find((e) => e.from === sel.edge.from && e.to === sel.edge.to);
+      if (!edge) {
+        this.selection = null;
+        return;
+      }
+      const evidence = await api.getEdgeEvidence(edge.from, edge.to).catch(() => null);
+      this.selection = evidence ? { ...sel, edge, evidence } : null;
       return;
     }
     try {
@@ -231,26 +304,43 @@ class ProjectStore {
 
   async refreshView() {
     if (!this.summary) return;
-    this.country = await api.getAtlasView({ scale: "country", focus: null, filters: this.filters });
-    await this.loadView();
+    const country = await api.getAtlasView({ scale: "country", focus: null, filters: this.filters });
+    // Both layers are fetched before either is shown: after a live update the
+    // base map and the focused view must change in the same frame.
+    const view = await this.fetchView(country);
+    this.country = country;
+    this.view = view;
+  }
+
+  /**
+   * Sizes come from lines of code, so an edit can move borders a little.
+   * The breadcrumb keeps the rectangles of the region and city in focus
+   * (semantic zoom compares the camera with them): take the fresh ones.
+   */
+  private syncCrumbs(country: AtlasViewDto) {
+    if (this.crumbs.length === 1) return;
+    const rectOf = (key: string | null) =>
+      country.members.find((m) => m.key === key)?.rect ?? country.outlines.find((o) => o.key === key)?.rect ?? null;
+    this.crumbs = this.crumbs.map((c) => (c.key ? { ...c, rect: rectOf(c.key) ?? c.rect } : c));
   }
 
   private async loadView() {
+    if (this.country) this.view = await this.fetchView(this.country);
+  }
+
+  private async fetchView(country: AtlasViewDto): Promise<AtlasViewDto> {
+    this.syncCrumbs(country);
     const focus = this.focus;
-    if (focus.scale === "country") {
-      this.view = this.country;
-      return;
-    }
+    if (focus.scale === "country") return country;
     try {
-      this.view = await api.getAtlasView({ scale: focus.scale, focus: focus.key, filters: this.filters });
+      return await api.getAtlasView({ scale: focus.scale, focus: focus.key, filters: this.filters });
     } catch (e) {
       // After a rescan the focused module or package may be gone.
       if (api.isAppError(e) && e.kind === "unknownNode") {
         this.crumbs = [COUNTRY];
-        this.view = this.country;
-      } else {
-        throw e;
+        return country;
       }
+      throw e;
     }
   }
 }

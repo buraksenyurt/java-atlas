@@ -2,16 +2,16 @@
 //! quickly, and the conversions from core types to DTOs.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use java_atlas_core::Scale;
 use java_atlas_core::atlas::{
-    Atlas, Edge, FindingKind, Layout, Level, MatchMethod, NodeId, NodeKind, ViewFilters,
-    ViolationKind,
+    Atlas, Edge, FindingKind, Layout, LayoutHint, Level, MatchMethod, NodeId, NodeKind,
+    ViewFilters, ViolationKind,
 };
-use java_atlas_core::facts::{BuildSystem, TypeKind};
+use java_atlas_core::facts::{BuildSystem, ProjectFacts, TypeKind};
 use java_atlas_core::geometry::Rect;
 use java_atlas_scan::{ScanOptions, jars, read_build, read_sources};
 
@@ -23,6 +23,11 @@ use crate::error::{AppError, ErrorKind};
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(40);
 
 pub struct OpenProject {
+    /// The folder that was opened (and is watched, phase 8).
+    pub root: PathBuf,
+    /// What the scanner saw. Kept so that a changed file can be patched in
+    /// without scanning everything again (phase 8).
+    pub facts: ProjectFacts,
     pub atlas: Atlas,
     pub summary: ProjectSummary,
     layout: Layout,
@@ -36,7 +41,13 @@ pub struct OpenProject {
 
 /// Reads, parses and analyses the project at `root`, reporting progress.
 /// Runs on a worker thread (see `commands::open_project`).
-pub fn scan(root: &Path, report: &(dyn Fn(ScanEvent) + Sync)) -> Result<OpenProject, AppError> {
+/// `hint` is the placement order of an earlier layout of the same project
+/// (empty for a project opened for the first time), so a rescan keeps the map in place.
+pub fn scan(
+    root: &Path,
+    report: &(dyn Fn(ScanEvent) + Sync),
+    hint: &LayoutHint,
+) -> Result<OpenProject, AppError> {
     if !root.is_dir() {
         return Err(AppError::new(
             ErrorKind::NotFound,
@@ -66,43 +77,57 @@ pub fn scan(root: &Path, report: &(dyn Fn(ScanEvent) + Sync)) -> Result<OpenProj
     let scan_ms = started.elapsed().as_millis() as u32;
 
     report(ScanEvent::Analysing);
-    let analysis_started = Instant::now();
-    let atlas = Atlas::build(&facts);
-    let analysis_ms = analysis_started.elapsed().as_millis() as u32;
+    Ok(OpenProject::from_facts(root, facts, scan_ms, hint))
+}
 
-    let build_system = match facts.build_system {
-        BuildSystem::Maven => "Maven",
-        BuildSystem::Gradle => "Gradle",
-        BuildSystem::Plain => "Plain",
-    };
-    let count =
-        |pred: fn(&NodeKind) -> bool| atlas.nodes.iter().filter(|n| pred(&n.kind)).count() as u32;
-    let summary = ProjectSummary {
-        name: atlas.name.clone(),
-        root: root.display().to_string(),
-        build_system: build_system.to_owned(),
-        modules: count(|k| matches!(k, NodeKind::Module { .. })),
-        packages: count(|k| matches!(k, NodeKind::Package { .. })),
-        types: count(|k| matches!(k, NodeKind::Type { .. })),
-        files: facts.file_count() as u32,
-        libraries: count(|k| matches!(k, NodeKind::Library { .. })),
-        unknown_packages: count(|k| matches!(k, NodeKind::Unknown)),
-        indexed_jars: facts.libraries.len() as u32,
-        scan_ms,
-        analysis_ms,
-        cycles: Vec::new(),
-        violations: Vec::new(),
-        findings: Vec::new(),
-        warnings: facts
-            .warnings
-            .iter()
-            .map(|w| WarningDto {
-                file: w.file.clone(),
-                message: w.message.clone(),
-            })
-            .collect(),
-    };
-    Ok(OpenProject::new(atlas, summary))
+impl OpenProject {
+    /// Analyses `facts` and precomputes everything views need.
+    /// `scan_ms` is how long reading the facts took (shown in the report).
+    pub fn from_facts(
+        root: &Path,
+        facts: ProjectFacts,
+        scan_ms: u32,
+        hint: &LayoutHint,
+    ) -> OpenProject {
+        let analysis_started = Instant::now();
+        let atlas = Atlas::build(&facts);
+        let analysis_ms = analysis_started.elapsed().as_millis() as u32;
+
+        let build_system = match facts.build_system {
+            BuildSystem::Maven => "Maven",
+            BuildSystem::Gradle => "Gradle",
+            BuildSystem::Plain => "Plain",
+        };
+        let count = |pred: fn(&NodeKind) -> bool| {
+            atlas.nodes.iter().filter(|n| pred(&n.kind)).count() as u32
+        };
+        let summary = ProjectSummary {
+            name: atlas.name.clone(),
+            root: root.display().to_string(),
+            build_system: build_system.to_owned(),
+            modules: count(|k| matches!(k, NodeKind::Module { .. })),
+            packages: count(|k| matches!(k, NodeKind::Package { .. })),
+            types: count(|k| matches!(k, NodeKind::Type { .. })),
+            files: facts.file_count() as u32,
+            libraries: count(|k| matches!(k, NodeKind::Library { .. })),
+            unknown_packages: count(|k| matches!(k, NodeKind::Unknown)),
+            indexed_jars: facts.libraries.len() as u32,
+            scan_ms,
+            analysis_ms,
+            cycles: Vec::new(),
+            violations: Vec::new(),
+            findings: Vec::new(),
+            warnings: facts
+                .warnings
+                .iter()
+                .map(|w| WarningDto {
+                    file: w.file.clone(),
+                    message: w.message.clone(),
+                })
+                .collect(),
+        };
+        OpenProject::new(root.to_path_buf(), facts, atlas, summary, hint)
+    }
 }
 
 fn type_kind(kind: TypeKind) -> TypeKindDto {
@@ -148,9 +173,15 @@ pub fn scale(s: ScaleDto) -> Scale {
 }
 
 impl OpenProject {
-    fn new(atlas: Atlas, mut summary: ProjectSummary) -> Self {
+    fn new(
+        root: PathBuf,
+        facts: ProjectFacts,
+        atlas: Atlas,
+        mut summary: ProjectSummary,
+        hint: &LayoutHint,
+    ) -> Self {
         let keys = atlas.key_index();
-        let layout = atlas.layout();
+        let layout = atlas.layout_like(hint);
         let sizes = atlas.sizes();
         let mut cycle_of = HashMap::new();
         let mut modules_in_cycle = HashSet::new();
@@ -161,6 +192,8 @@ impl OpenProject {
             }
         }
         let mut project = OpenProject {
+            root,
+            facts,
             atlas,
             summary: summary.clone(),
             layout,
@@ -175,6 +208,11 @@ impl OpenProject {
         summary.findings = project.findings();
         project.summary = summary;
         project
+    }
+
+    /// This layout's placement order, for the next layout of the same project.
+    pub fn hint(&self) -> LayoutHint {
+        self.atlas.hint(&self.layout)
     }
 
     pub fn node_id(&self, key: &str) -> Result<NodeId, AppError> {
@@ -657,7 +695,7 @@ mod tests {
 
     fn bank() -> OpenProject {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../samples/atlas-bank");
-        scan(&root, &|_| {}).unwrap()
+        scan(&root, &|_| {}, &LayoutHint::new()).unwrap()
     }
 
     #[test]
@@ -678,15 +716,19 @@ mod tests {
     fn progress_arrives_in_stage_order() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../samples/atlas-bank");
         let stages = Mutex::new(Vec::new());
-        scan(&root, &|e| {
-            let tag = match e {
-                ScanEvent::ReadingBuild => "build".to_owned(),
-                ScanEvent::ParsingSources { done, total } => format!("{done}/{total}"),
-                ScanEvent::IndexingLibraries => "jars".to_owned(),
-                ScanEvent::Analysing => "analysis".to_owned(),
-            };
-            stages.lock().unwrap().push(tag);
-        })
+        scan(
+            &root,
+            &|e| {
+                let tag = match e {
+                    ScanEvent::ReadingBuild => "build".to_owned(),
+                    ScanEvent::ParsingSources { done, total } => format!("{done}/{total}"),
+                    ScanEvent::IndexingLibraries => "jars".to_owned(),
+                    ScanEvent::Analysing => "analysis".to_owned(),
+                };
+                stages.lock().unwrap().push(tag);
+            },
+            &LayoutHint::new(),
+        )
         .unwrap();
         let stages = stages.into_inner().unwrap();
         assert_eq!(stages.first().map(String::as_str), Some("build"));
@@ -876,7 +918,7 @@ mod fixtures {
         std::fs::create_dir_all(&dir).unwrap();
         let root =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../samples/atlas-bank");
-        let p = scan(&root, &|_| {}).unwrap();
+        let p = scan(&root, &|_| {}, &LayoutHint::new()).unwrap();
         let filters = ViewFiltersDto {
             tests: false,
             jdk: false,

@@ -3,6 +3,7 @@
   import { project } from "./lib/project.svelte";
   import Toolbar from "./lib/Toolbar.svelte";
   import ScanOverlay from "./lib/ScanOverlay.svelte";
+  import LiveToast from "./lib/LiveToast.svelte";
   import SidePanel from "./lib/panels/SidePanel.svelte";
   import DetailsPanel from "./lib/panels/DetailsPanel.svelte";
   import AtlasView from "./lib/atlas/AtlasView.svelte";
@@ -35,6 +36,7 @@
           {#if project.country}
             <AtlasView />
           {/if}
+          <LiveToast />
           {#if project.selection}
             <div class="drawer"><DetailsPanel /></div>
           {/if}

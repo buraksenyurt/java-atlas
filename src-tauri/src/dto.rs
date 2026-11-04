@@ -381,3 +381,46 @@ pub struct LibraryPackageDto {
     /// "jar" or "name".
     pub matched_by: String,
 }
+
+// ---------------------------------------------------------------------------
+// Live updates (phase 8)
+// ---------------------------------------------------------------------------
+
+/// Emitted as the `atlas-changed` event when watched files changed.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[ts(export)]
+pub enum LiveEvent {
+    /// The atlas was rebuilt; views must be fetched again.
+    #[serde(rename_all = "camelCase")]
+    Updated {
+        summary: Box<ProjectSummary>,
+        /// A build file changed (or events were lost): everything was scanned again.
+        full: bool,
+        /// The build file that asked for the full scan, relative to the root.
+        trigger: Option<String>,
+        /// Changed source files, relative, at most 20.
+        files: Vec<String>,
+        file_count: u32,
+        /// Modules, packages and types touched by the change, for a short highlight.
+        changed_keys: Vec<String>,
+        /// Time from the batch to the new atlas.
+        ms: u32,
+    },
+    /// The update failed (a half-written pom.xml, say); the previous atlas stays.
+    #[serde(rename_all = "camelCase")]
+    Failed { message: String },
+}
+
+/// The state of live updates, returned by `set_live`.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LiveDto {
+    /// The user wants live updates.
+    pub enabled: bool,
+    /// A watch is running on the open project.
+    pub watching: bool,
+    /// Why watching could not start.
+    pub error: Option<String>,
+}

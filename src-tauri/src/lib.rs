@@ -4,9 +4,11 @@
 mod commands;
 mod dto;
 mod error;
+mod live;
 mod project;
 mod recent;
 mod state;
+mod watch;
 
 use state::AppState;
 
@@ -26,6 +28,7 @@ pub fn run() {
             commands::search,
             commands::recent_projects,
             commands::forget_recent_project,
+            commands::set_live,
         ])
         .run(tauri::generate_context!())
         .expect("error while running java-atlas");

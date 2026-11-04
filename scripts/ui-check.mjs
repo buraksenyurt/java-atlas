@@ -62,6 +62,10 @@ await page.addInitScript((fixtures) => {
             .slice(0, 30)
             .map((node) => ({ node, context: null }));
         }
+        // Phase 8: live updates are switched on; no event ever arrives in the mock.
+        case "set_live": return { enabled: args.enabled, watching: true, error: null };
+        case "plugin:event|listen": return 1;
+        case "plugin:event|unlisten": return null;
         default: throw { kind: "internal", message: "not mocked: " + cmd };
       }
     },

@@ -19,7 +19,7 @@ mod resolve;
 mod search;
 mod view;
 
-pub use layout::{Archipelago, LAND, Layout};
+pub use layout::{Archipelago, LAND, Layout, LayoutHint};
 pub use view::{View, ViewEdge, ViewFilters};
 
 use crate::facts::{JpmsFacts, ProjectFacts, TypeKind};

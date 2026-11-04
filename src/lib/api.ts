@@ -2,11 +2,14 @@
 // `invoke` directly, so every IPC call is visible in this one file.
 // Types come from src/lib/bindings, generated from Rust by ts-rs.
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type { AppError } from "./bindings/AppError";
 import type { AtlasViewDto } from "./bindings/AtlasViewDto";
 import type { EvidenceDto } from "./bindings/EvidenceDto";
+import type { LiveDto } from "./bindings/LiveDto";
+import type { LiveEvent } from "./bindings/LiveEvent";
 import type { NodeDetailsDto } from "./bindings/NodeDetailsDto";
 import type { ProjectSummary } from "./bindings/ProjectSummary";
 import type { RecentProject } from "./bindings/RecentProject";
@@ -67,6 +70,19 @@ export function recentProjects(): Promise<RecentProject[]> {
 
 export function forgetRecentProject(path: string): Promise<RecentProject[]> {
   return invoke<RecentProject[]>("forget_recent_project", { path });
+}
+
+/** Switches live updates (phase 8) on or off; reports whether the folder is watched. */
+export function setLive(enabled: boolean): Promise<LiveDto> {
+  return invoke<LiveDto>("set_live", { enabled });
+}
+
+/**
+ * Live updates arrive as an *event*, not as a command's answer: Rust emits
+ * `atlas-changed` whenever watched files changed. Returns the unsubscribe function.
+ */
+export function onAtlasChanged(handler: (event: LiveEvent) => void): Promise<UnlistenFn> {
+  return listen<LiveEvent>("atlas-changed", (e) => handler(e.payload));
 }
 
 /** Commands reject with an `AppError`; anything else is a bug or a plugin error. */

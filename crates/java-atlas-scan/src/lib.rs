@@ -2,10 +2,12 @@
 //!
 //! Everything that touches the disk or a parser lives here: build files
 //! (phase 1, [`build_files`]), Java sources via tree-sitter (phase 2,
-//! [`sources`]) and library jars in local caches (phase 3, [`jars`]). The
+//! [`sources`]) and library jars in local caches (phase 3, [`jars`]);
+//! [`incremental`] keeps the facts current as files change (phase 8). The
 //! output is plain data ("facts") that java-atlas-core understands.
 
 pub mod build_files;
+pub mod incremental;
 pub mod jars;
 mod paths;
 pub mod sources;

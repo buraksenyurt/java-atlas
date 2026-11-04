@@ -116,12 +116,14 @@
 
   // -- camera -----------------------------------------------------------------
 
-  let fittedWorld = "";
+  // A new project starts with the whole country in view. A live update
+  // (phase 8) may resize the world a little (a new island, say): the
+  // camera then stays where the user put it.
+  let fittedProject: string | null = null;
   $effect(() => {
-    const key = `${base.world.x},${base.world.y},${base.world.w},${base.world.h}`;
-    if (key !== fittedWorld) {
-      fittedWorld = key;
-      camera.setWorld(base.world);
+    camera.setWorld(base.world);
+    if (project.path !== fittedProject) {
+      fittedProject = project.path;
       camera.fit(base.world, 0);
     }
   });
@@ -391,6 +393,7 @@
           class:context={focusRegion !== null && !inFocus}
           class:hovered={hovered?.key === r.key}
           class:selected={selectedKey === r.key}
+          class:pulse={project.pulse.has(r.key)}
           style:--fill="var(--region-{colour.get(r.key)})"
           onpointerover={() => (hovered = r)}
           onclick={() => tileClick(r)}
@@ -404,7 +407,7 @@
           {#if !inFocus || scale === "city"}
             {#each base.outlines.filter((o) => o.parent === r.key && !(scale === "city" && o.key === focusKey)) as c (c.key)}
               {@const ct = label(c.rect, shortPackage(cityName(c.key)))}
-              <rect class="city-outline" class:test={c.isTest} class:selected={selectedKey === c.key} x={c.rect.x} y={c.rect.y} width={c.rect.w} height={c.rect.h} rx="3" />
+              <rect class="city-outline" class:test={c.isTest} class:selected={selectedKey === c.key} class:pulse={project.pulse.has(c.key)} x={c.rect.x} y={c.rect.y} width={c.rect.w} height={c.rect.h} rx="3" />
               {#if ct.size >= 5}
                 <text class="city-name" x={ct.x} y={ct.y} font-size={ct.size}>{ct.text}</text>
               {/if}
@@ -431,6 +434,7 @@
           class:cycle={c.inCycle}
           class:hovered={hovered?.key === c.key}
           class:selected={selectedKey === c.key}
+          class:pulse={project.pulse.has(c.key)}
           onpointerover={() => (hovered = c)}
           onclick={() => tileClick(c)}
           onkeydown={(e) => e.key === "Enter" && enter(c)}
@@ -441,7 +445,7 @@
         >
           <rect class="city-fill" x={c.rect.x} y={c.rect.y} width={c.rect.w} height={c.rect.h} rx="4" />
           {#each view.outlines.filter((o) => o.parent === c.key) as b (b.key)}
-            <rect class="building-outline" class:selected={selectedKey === b.key} x={b.rect.x + b.rect.w * 0.1} y={b.rect.y + b.rect.h * 0.1} width={b.rect.w * 0.8} height={b.rect.h * 0.8} rx="1.5" />
+            <rect class="building-outline" class:selected={selectedKey === b.key} class:pulse={project.pulse.has(b.key)} x={b.rect.x + b.rect.w * 0.1} y={b.rect.y + b.rect.h * 0.1} width={b.rect.w * 0.8} height={b.rect.h * 0.8} rx="1.5" />
           {/each}
           {#if c.exported === false}
             <!-- Not exported by its JPMS module: a locked city. -->
@@ -468,6 +472,7 @@
           class:test={b.isTest}
           class:hovered={hovered?.key === b.key}
           class:selected={selectedKey === b.key}
+          class:pulse={project.pulse.has(b.key)}
           onpointerover={() => (hovered = b)}
           onclick={() => pick(b)}
           onkeydown={(e) => e.key === "Enter" && pick(b)}
@@ -682,6 +687,19 @@
   .island.selected ellipse, .port.selected rect { stroke: var(--accent); stroke-width: 3; }
   .island.selected { opacity: 1; }
   .building, .island, .port { cursor: pointer; }
+
+  /* Live update (phase 8): what just changed glows for a moment. */
+  @keyframes glow {
+    from { stroke: var(--ok); stroke-width: 5; stroke-opacity: 1; }
+    to { stroke-opacity: 0; stroke-width: 1; }
+  }
+  .region.pulse .border, .city.pulse .city-fill, .city-outline.pulse,
+  .building.pulse rect, .building.pulse polygon { animation: glow 1.2s ease-out 2; }
+  .building-outline.pulse { fill: var(--ok); opacity: 0.8; }
+  @media (prefers-reduced-motion: reduce) {
+    .region.pulse .border, .city.pulse .city-fill, .city-outline.pulse,
+    .building.pulse rect, .building.pulse polygon { animation: none; stroke: var(--ok); stroke-width: 3; }
+  }
 
   /* Many roads at once (a big region): thinner ink, so the tiles stay readable. */
   svg.dense .road:not(.out):not(.in) .line { opacity: 0.4; }

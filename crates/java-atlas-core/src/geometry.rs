@@ -97,10 +97,16 @@ fn worst(row: &[f64], side: f64) -> f64 {
     (w2 * max / s2).max(s2 / (w2 * min))
 }
 
-/// Places a finished row along the short side of `rect`; returns the space left.
-fn place_row(row: &[(usize, f64)], rect: Rect, out: &mut [Rect]) -> Rect {
+/// Places a finished row along the short side of `rect` (or as `column`
+/// says); returns the space left and whether the row became a column.
+fn place_row(
+    row: &[(usize, f64)],
+    rect: Rect,
+    column: Option<bool>,
+    out: &mut [Rect],
+) -> (Rect, bool) {
     let sum: f64 = row.iter().map(|(_, a)| a).sum();
-    if rect.w >= rect.h {
+    if column.unwrap_or(rect.w >= rect.h) {
         // A column on the left edge.
         let width = if rect.h > 0.0 { sum / rect.h } else { 0.0 };
         let mut y = rect.y;
@@ -109,7 +115,10 @@ fn place_row(row: &[(usize, f64)], rect: Rect, out: &mut [Rect]) -> Rect {
             out[i] = Rect::new(rect.x, y, width, h);
             y += h;
         }
-        Rect::new(rect.x + width, rect.y, rect.w - width, rect.h)
+        (
+            Rect::new(rect.x + width, rect.y, rect.w - width, rect.h),
+            true,
+        )
     } else {
         // A row on the top edge.
         let height = if rect.w > 0.0 { sum / rect.w } else { 0.0 };
@@ -119,49 +128,111 @@ fn place_row(row: &[(usize, f64)], rect: Rect, out: &mut [Rect]) -> Rect {
             out[i] = Rect::new(x, rect.y, w, height);
             x += w;
         }
-        Rect::new(rect.x, rect.y + height, rect.w, rect.h - height)
+        (
+            Rect::new(rect.x, rect.y + height, rect.w, rect.h - height),
+            false,
+        )
     }
+}
+
+/// Where a tile ended up in its parent's treemap: in which row, and whether
+/// that row was a column. Fed back into [`squarify_like`] (phase 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    pub row: u32,
+    pub column: bool,
 }
 
 /// Splits `rect` into one rectangle per value, areas proportional to the
 /// values, as square as possible. The result is in the order of `values`.
 /// Zero or negative values get an empty rectangle at the corner.
 pub fn squarify(values: &[f64], rect: Rect) -> Vec<Rect> {
+    squarify_in_order(values, &biggest_first(values), rect)
+}
+
+/// Indices of `values`, biggest first; ties keep the input order, so equal
+/// inputs always give the same picture. The order [`squarify`] lays out in.
+pub fn biggest_first(values: &[f64]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..values.len()).collect();
+    order.sort_by(|&a, &b| values[b].total_cmp(&values[a]).then(a.cmp(&b)));
+    order
+}
+
+/// [`squarify`] with the placement order given by the caller (indices into
+/// `values`). Biggest first gives the squarest tiles; keeping the order of
+/// an earlier layout keeps tiles in place when sizes change a little
+/// (phase 8: a live update must not shuffle the map).
+pub fn squarify_in_order(values: &[f64], order: &[usize], rect: Rect) -> Vec<Rect> {
+    squarify_like(values, order, &[], rect).0
+}
+
+/// [`squarify_in_order`] that also keeps the *rows* of an earlier layout:
+/// tiles that shared a row (`previous`, indexed like `values`) share one
+/// again, laid out in the same direction. Sizes only change the proportions;
+/// the picture keeps its structure. Tiles without a previous placement are
+/// grouped by the usual "squarest" rule. Returns the rectangles and the new
+/// placements, both indexed like `values`.
+pub fn squarify_like(
+    values: &[f64],
+    order: &[usize],
+    previous: &[Option<Placement>],
+    rect: Rect,
+) -> (Vec<Rect>, Vec<Option<Placement>>) {
     let mut out = vec![Rect::new(rect.x, rect.y, 0.0, 0.0); values.len()];
+    let mut placed = vec![None; values.len()];
     let total: f64 = values.iter().filter(|v| **v > 0.0).sum();
     if total <= 0.0 || rect.area() <= 0.0 {
-        return out;
+        return (out, placed);
     }
 
-    // Biggest first: the algorithm relies on decreasing sizes. Ties keep the
-    // input order, so equal inputs always give the same picture.
     let scale = rect.area() / total;
-    let mut order: Vec<(usize, f64)> = values
+    let order: Vec<(usize, f64)> = order
         .iter()
-        .enumerate()
-        .filter(|(_, v)| **v > 0.0)
+        .map(|&i| (i, values[i]))
+        .filter(|(_, v)| *v > 0.0)
         .map(|(i, v)| (i, v * scale))
         .collect();
-    order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let before = |i: usize| previous.get(i).copied().flatten();
 
     let mut free = rect;
     let mut row: Vec<(usize, f64)> = Vec::new();
+    let mut row_id = 0;
+    let mut flush = |row: &[(usize, f64)], free: Rect, row_id: &mut u32| {
+        // The row keeps the direction its first tile had, if it had one.
+        let column = row.first().and_then(|(i, _)| before(*i)).map(|p| p.column);
+        let (rest, column) = place_row(row, free, column, &mut out);
+        for (i, _) in row {
+            placed[*i] = Some(Placement {
+                row: *row_id,
+                column,
+            });
+        }
+        *row_id += 1;
+        rest
+    };
     for item in order {
-        let side = free.w.min(free.h);
-        let areas: Vec<f64> = row.iter().map(|(_, a)| *a).collect();
-        let mut with: Vec<f64> = areas.clone();
-        with.push(item.1);
-        if row.is_empty() || worst(&with, side) <= worst(&areas, side) {
+        let join = match (row.first().and_then(|(i, _)| before(*i)), before(item.0)) {
+            _ if row.is_empty() => true,
+            (Some(first), Some(this)) => first.row == this.row,
+            _ => {
+                let side = free.w.min(free.h);
+                let areas: Vec<f64> = row.iter().map(|(_, a)| *a).collect();
+                let mut with: Vec<f64> = areas.clone();
+                with.push(item.1);
+                worst(&with, side) <= worst(&areas, side)
+            }
+        };
+        if join {
             row.push(item);
         } else {
-            free = place_row(&row, free, &mut out);
+            free = flush(&row, free, &mut row_id);
             row = vec![item];
         }
     }
     if !row.is_empty() {
-        place_row(&row, free, &mut out);
+        flush(&row, free, &mut row_id);
     }
-    out
+    (out, placed)
 }
 
 #[cfg(test)]
@@ -170,6 +241,28 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
+    }
+
+    #[test]
+    fn previous_rows_survive_a_change_in_size() {
+        let rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+        let values = [6.0, 6.0, 4.0, 3.0, 2.0, 2.0, 1.0];
+        let order = biggest_first(&values);
+        let (_, placed) = squarify_like(&values, &order, &[], rect);
+
+        // The third tile almost doubles: plain squarify would regroup the rows.
+        let grown = [6.0, 6.0, 7.5, 3.0, 2.0, 2.0, 1.0];
+        let (rects, again) = squarify_like(&grown, &order, &placed, rect);
+        assert_eq!(placed, again, "same rows, same directions");
+        let (_, fresh) = squarify_like(&grown, &order, &[], rect);
+        assert_ne!(placed, fresh, "without the hint the rows would change");
+        let total: f64 = grown.iter().sum();
+        for (v, r) in grown.iter().zip(&rects) {
+            assert!(
+                close(r.area(), v / total * rect.area()),
+                "areas still follow the values"
+            );
+        }
     }
 
     #[test]

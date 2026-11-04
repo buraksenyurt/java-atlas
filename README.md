@@ -11,6 +11,8 @@ Tekerlekle yakınlaştıkça ülke ▸ bölge (modül) ▸ şehir (paket) ölçe
 - **Yollar** = bağımlılıklar · **Adalar** = dış kütüphaneler
 - Kırmızı yollar = döngüler ve JPMS ihlalleri
 
+Proje açıkken klasör izlenir: bir `.java` dosyasını kaydettiğinde sadece o dosya yeniden okunur ve harita yerinden oynamadan güncellenir (araç çubuğundaki **Canlı** düğmesiyle duraklatılabilir).
+
 Analiz kaynak kod üzerinden yapılır (tree-sitter); JDK, Maven ya da Gradle kurulu olması gerekmez.
 
 ## Yığın
@@ -46,6 +48,7 @@ Gereksinimler ve platforma özel notlar: [docs/tutorial/00-kurulum-ve-iskelet.md
 - [Faz 5 — Harita yerleşimi ve ilk çizim](docs/tutorial/05-treemap-ve-cizim.md)
 - [Faz 6 — Yollar ve semantik zoom](docs/tutorial/06-yollar-ve-zoom.md)
 - [Faz 7 — Etkileşim ve bilgi panelleri](docs/tutorial/07-etkilesim-ve-paneller.md) *(MVP)*
+- [Faz 8 — Canlı izleme](docs/tutorial/08-canli-izleme.md)
 
 Build dosyalarından ne okunduğunu görmek için:
 

@@ -2,22 +2,31 @@
 //!
 //! Scanning moves to a worker thread with `spawn_blocking`, so the window
 //! stays responsive; progress flows back through a `Channel`.
+//!
+//! Live updates (phase 8) go the other way: nobody asked, Rust noticed a
+//! file change. That is what *events* are for: `app.emit("atlas-changed", …)`
+//! reaches every listener, with no command waiting for an answer.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::dto::{
-    AtlasViewDto, EvidenceDto, NodeDetailsDto, ProjectSummary, RecentProject, ScanEvent,
-    SearchHitDto, TreeDto, ViewRequest,
+    AtlasViewDto, EvidenceDto, LiveDto, LiveEvent, NodeDetailsDto, ProjectSummary, RecentProject,
+    ScanEvent, SearchHitDto, TreeDto, ViewRequest,
 };
 use crate::error::{AppError, ErrorKind};
+use crate::live;
 use crate::project::{self, OpenProject};
 use crate::recent;
 use crate::state::AppState;
+use crate::watch::{self, Batch};
+
+/// The event the front end listens to for live updates.
+pub const ATLAS_CHANGED: &str = "atlas-changed";
 
 /// What the status bar shows: proof that the Rust side is alive and that the
 /// tree-sitter toolchain inside java-atlas-scan works.
@@ -55,13 +64,23 @@ pub async fn open_project(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ProjectSummary, AppError> {
+    // Rescanning the project on screen keeps its tiles where they are.
+    let hint = state
+        .get()
+        .filter(|p| p.root == Path::new(&path))
+        .map(|p| p.hint())
+        .unwrap_or_default();
     let scanned = {
         let root = PathBuf::from(&path);
         tauri::async_runtime::spawn_blocking(move || {
             // A closed window drops the channel; a failed send is not our problem.
-            project::scan(&root, &|event| {
-                let _ = on_progress.send(event);
-            })
+            project::scan(
+                &root,
+                &|event| {
+                    let _ = on_progress.send(event);
+                },
+                &hint,
+            )
         })
         .await
         .map_err(join_error)?
@@ -87,8 +106,103 @@ pub async fn open_project(
             build_system: summary.build_system.clone(),
         },
     );
+    let root = project.root.clone();
     state.set(project);
+    start_watch(&app, root);
     Ok(summary)
+}
+
+/// Starts watching the open project's folder, replacing any previous watch.
+/// A watch that cannot start (too many inotify watches, a network drive) is
+/// not an error: the map works, just not live; `set_live` reports why.
+fn start_watch(app: &AppHandle, root: PathBuf) {
+    let state = app.state::<AppState>();
+    // Drop the old watch outside the lock: its thread may be waiting for it.
+    let old = state.live().watch.take();
+    drop(old);
+
+    let handle = app.clone();
+    let watched = root.clone();
+    let started = watch::start(root, move |batch| on_batch(&handle, &watched, batch));
+    let mut live = state.live();
+    live.pending = Batch::default();
+    match started {
+        Ok(w) => {
+            live.watch = Some(w);
+            live.error = None;
+        }
+        Err(e) => {
+            live.watch = None;
+            live.error = Some(e.to_string());
+        }
+    }
+}
+
+/// Runs on the watch thread, once per debounced batch.
+fn on_batch(app: &AppHandle, watched: &PathBuf, batch: Batch) {
+    let state = app.state::<AppState>();
+    {
+        let mut live = state.live();
+        if !live.enabled {
+            live.pending.merge(batch);
+            return;
+        }
+    }
+    apply_batch(app, &state, watched, batch);
+}
+
+fn apply_batch(app: &AppHandle, state: &AppState, watched: &PathBuf, batch: Batch) {
+    let Some(current) = state.get() else {
+        return;
+    };
+    // A batch from the previous project's watch, delivered late.
+    if &current.root != watched {
+        return;
+    }
+    match live::refresh(&current, &batch) {
+        Ok(None) => {}
+        Ok(Some((project, event))) => {
+            if state.replace(&current, project) {
+                let _ = app.emit(ATLAS_CHANGED, event);
+            }
+        }
+        Err(e) => {
+            let _ = app.emit(ATLAS_CHANGED, LiveEvent::Failed { message: e.message });
+        }
+    }
+}
+
+fn live_dto(state: &AppState) -> LiveDto {
+    let live = state.live();
+    LiveDto {
+        enabled: live.enabled,
+        watching: live.watch.is_some(),
+        error: live.error.clone(),
+    }
+}
+
+/// Switches live updates on or off. Changes made while they were off are
+/// applied as soon as they are switched on again.
+#[tauri::command]
+pub fn set_live(enabled: bool, app: AppHandle, state: State<'_, AppState>) -> LiveDto {
+    let (pending, watched) = {
+        let mut live = state.live();
+        live.enabled = enabled;
+        let watched = live.watch.as_ref().map(|w| w.root.clone());
+        let pending = if enabled {
+            std::mem::take(&mut live.pending)
+        } else {
+            Batch::default()
+        };
+        (pending, watched)
+    };
+    if let (false, Some(watched)) = (pending.is_empty(), watched) {
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            apply_batch(&handle, &handle.state::<AppState>(), &watched, pending);
+        });
+    }
+    live_dto(&state)
 }
 
 #[tauri::command]

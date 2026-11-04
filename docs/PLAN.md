@@ -1,10 +1,10 @@
 # java-atlas — Proje Plan Dokümanı
 
 > **Atölye:** Fikirler Atölyesi
-> **Doküman sürümü:** v1.7 — 19 Ekim 2026
+> **Doküman sürümü:** v1.8 — 4 Kasım 2026
 > **Dokümanlar:** bu klasör (`java-atlas/docs`)
 > **Kod:** `C:\Users\burak\Development\java-atlas` · [github.com/buraksenyurt/java-atlas](https://github.com/buraksenyurt/java-atlas) *(Ekim 2026'da `coding-vibes`'tan geçmişiyle taşındı)*
-> **Durum:** Faz 0–7 tamamlandı — **MVP hazır**; sıradaki: Faz 8 (canlı izleme)
+> **Durum:** Faz 0–8 tamamlandı (MVP + canlı izleme); sıradaki: Faz 9 (büyük projeler)
 
 ---
 
@@ -290,6 +290,7 @@ Beklenen sayılar (modül, paket, tip, kenar, döngü, ihlal) Faz 1–3 doküman
 
 - **Yeni öğreti — `tauri::ipc::Channel`:** Tarama uzun sürebilir. easy-git'te tek seferlik cevap yeterliydi; burada `Channel<ScanProgress>` ile "312/1840 dosya ayrıştırıldı" gibi akan ilerleme mesajları gönderilir.
 - Ağır iş `spawn_blocking` içinde; ayrıştırma içeride `rayon` ile paralel.
+- **Faz 8 — event:** canlı güncellemeler kimse sormadan gelir; `app.emit("atlas-changed", LiveEvent)` ile yayılır, ön yüz `listen` ile dinler. `set_live(enabled)` izlemeyi duraklatır/sürdürür.
 - Ön yüz bütün atlası değil, **o anki ölçek ve odak için görünümü** ister (`get_atlas_view`). Büyük projede IPC yükü küçük kalır.
 - Capabilities: `dialog:allow-open`, `core:default`, tema için `core:window:allow-set-theme`. Başka hiçbir şey.
 
@@ -473,8 +474,17 @@ MVP = **Faz 0 → Faz 7**. Sonrası cila ve genişleme.
 
 ---
 
-### Faz 8 — Canlı izleme
-`notify` ile `.java` ve build dosyası değişikliklerini izleme, debounce, **sadece değişen dosyanın** yeniden ayrıştırılması (olgular dosya bazlı olduğu için mümkün), haritanın kendiliğinden güncellenmesi.
+### Faz 8 — Canlı izleme ✅
+`docs/tutorial/08-canli-izleme.md`
+
+- `notify` ile proje klasörünü izleme, kendi yazdığımız debounce (300 ms sessizlik, en fazla 2 sn)
+- `incremental::plan` / `apply`: sadece değişen `.java` dosyalarını yeniden ayrıştırma; build dosyası ya da `module-info.java` değişince tam tarama
+- Tauri **event** (`atlas-changed`) ile ön yüze haber; kamera, ölçek ve seçim yerinde kalıyor
+- **Kararlı yerleşim:** yeni yerleşim eskisinin sırasını ve satırlarını koruyor
+- Araç çubuğunda *Canlı / Durdu* düğmesi, değişen yerlerin kısa süre parlaması, bildirim
+
+**Kazanım:** Dosya sistemi olayları, debounce, kanal + iş parçacığı, Tauri event'leri, artımlı hesaplama ve doğruluk testi ("artımlı = tam tarama"), kararlı treemap.
+**Çıktı:** Bir `.java` dosyasını kaydet → harita birkaç milisaniyede güncellenir, değişen şehir parlar.
 
 ### Faz 9 — Büyük projeler
 Tarama önbelleği (dosya yolu + mtime + boyut → olgular, diskte), görünür alan sanallaştırması, kenar demetleme, performans ölçümü (`cargo flamegraph`, tarayıcı performans sekmesi). Gerçek bir açık kaynak projeyle (ör. birkaç bin dosyalık bir Apache projesi) deneme.
@@ -584,6 +594,13 @@ Dosya adlandırma: `NN-konu-adi.md`, `docs/tutorial/` altında. Dokümanlar Tür
 | Arama | Ön yüzde | Core'da `Atlas::search` (tam ad > önek > içerir > FQN; sonra tür, uzunluk); `/` veya Ctrl+F, 120 ms debounce, eski cevap yenisini ezmiyor | Büyük projede bütün adları ön yüze taşımamak |
 | Komutlar (Faz 7) | — | `get_tree`, `search`; `NodeDetailsDto`'ya `path`, `jpms`, `cycles`, `violations`, `findings` | Panel tek istekle dolsun |
 | Kanıt sayısı | Kullanım = kanıt | Bir satırdaki birden çok kullanım tek kanıt; panel bunu not olarak yazıyor | `5 kullanım / 4 kanıt` kafa karıştırmasın |
+| İzleme bildirimi | Ön yüze `Channel` | Tauri **event** (`atlas-changed`) | Channel bir komutun cevabına bağlı; izleme kimse sormadan, uygulama boyunca konuşuyor |
+| Debounce | `notify-debouncer-*` | `std::sync::mpsc` + `recv_timeout` ile kendi döngümüz (300 ms / 2 sn) | 30 satırlık bir döngü öğretici; ek crate yok |
+| Artımlı tarama | Değişen dosyayı ayrıştır | `plan` (saf, sınıflandırır) + `apply` (diske dokunur); klasör olayları **ağaç** olarak işleniyor; `target/`, `build/`, `.git/` gürültüsü eleniyor | Windows'ta bir paket klasörü silinince sadece klasör olayı gelebiliyor; Maven `target/classes/META-INF` içine `pom.xml` kopyalıyor |
+| Doğruluk ölçütü | — | Testlerde artımlı güncelleme sonrası olgular **tam taramayla birebir aynı** (uyarıların sırası hariç) | Artımlı hesaplamanın tek güvenilir testi |
+| Yeniden yerleşim | Her seferinde squarified | `LayoutHint`: eski sıralama + satırlar (`Placement`) korunuyor, yeni parçalar sona | Satır sayısı değişince bölgeler yer değiştiriyordu; şimdi sadece oranlar değişiyor (ölçüm: sert bir değişiklikte kayma 1870 → 820 birim) |
+| Kamera | Proje açılınca sığdır | Sadece **yeni proje** açılınca sığdır; canlı güncellemede ve aynı projeyi yeniden taramada yerinde kalır | Dünya dikdörtgeni yeni bir adayla büyüyebilir |
+| Bozuk build dosyası | — | Hata bildirimi, eski atlas duruyor | Kaydetme anında yarım XML olağan |
 | Kopyalama | `navigator.clipboard` | Başarısız olursa gizli `textarea` + `execCommand("copy")` | Bazı webview'larda Clipboard API yok ya da reddediliyor |
 | `quick-xml` | 0.3x API | 0.42: `xml10_content()`, varlıklar `Event::GeneralRef` | İnternetteki örneklerin çoğu eski API'yi kullanıyor |
 
@@ -591,6 +608,6 @@ Dosya adlandırma: `NN-konu-adi.md`, `docs/tutorial/` altında. Dokümanlar Tür
 
 ## 13. Sonraki Adım
 
-MVP tamamlandı. Önce **Windows 11'de bir deneme** (`npm run tauri dev`, kendi Java projelerinden biriyle) — kabul kriterlerinde açık kalan tek madde bu.
+Faz 8 tamamlandı. Kabul kriterlerinde açık kalan **Windows 11 denemesi** canlı izlemeyle birlikte yapılabilir: bir dosyayı IntelliJ / VS Code'da kaydet, haritanın güncellendiğini gör (Windows'ta `ReadDirectoryChangesW` kullanılıyor; Linux'ta inotify ile doğrulandı).
 
-Sonra **Faz 8 — Canlı izleme** (`docs/tutorial/08-canli-izleme.md`): `notify` ile `.java` ve build dosyalarını izlemek, debounce, sadece değişen dosyayı yeniden ayrıştırıp atlası yeniden kurmak, ön yüze `Channel` ile "atlas değişti" haberi; kamera, ölçek ve seçim kararlı anahtarlar sayesinde yerinde kalacak.
+Sonra **Faz 9 — Büyük projeler** (`docs/tutorial/09-buyuk-projeler.md`): diskte tarama önbelleği (dosya yolu + mtime + boyut → olgular; Faz 8'in `apply`'ı bunun temeli), görünür alan sanallaştırması, kenar demetleme, ölçüm.

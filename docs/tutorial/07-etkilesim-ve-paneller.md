@@ -1,6 +1,6 @@
 # Faz 7 — Etkileşim ve Bilgi Panelleri
 
-> **Önceki:** [06 — Yollar ve semantik zoom](06-yollar-ve-zoom.md) · **Sonraki:** 08 — Canlı izleme *(yazılacak)*
+> **Önceki:** [06 — Yollar ve semantik zoom](06-yollar-ve-zoom.md) · **Sonraki:** [08 — Canlı izleme](08-canli-izleme.md)
 
 ## 1. Bu bölümde ne yapacağız
 
